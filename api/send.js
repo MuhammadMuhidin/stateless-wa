@@ -1,8 +1,17 @@
+import { Pool } from "pg";
 import { sendWaOnce } from "../lib/wa-send-once.js";
 
 export const config = {
   maxDuration: 300,
 };
+
+const DATABASE_URL = process.env.NEONDB_URI || process.env.DATABASE_URL;
+const resetPool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
+  : null;
 
 function writeEvent(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -73,6 +82,31 @@ function validatePayload(payload) {
   return "";
 }
 
+function isLoggedOutSessionError(error) {
+  const message = String(error?.message || "").toLowerCase();
+
+  return message.includes("loggedout")
+    || message.includes("logged out")
+    || message.includes("logout")
+    || message.includes("unpaired")
+    || message.includes("pairing ulang")
+    || message.includes("perlu pairing");
+}
+
+async function clearStoredSession(sessionId) {
+  if (!resetPool) {
+    throw new Error("NEONDB_URI atau DATABASE_URL wajib diisi untuk reset session WhatsApp.");
+  }
+
+  await resetPool.query("DELETE FROM wa_session WHERE id = $1", [sessionId]);
+}
+
+function runSend(payload, res) {
+  return sendWaOnce(payload, {
+    emit: (event) => writeEvent(res, event),
+  });
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -103,9 +137,23 @@ export default async function handler(req, res) {
 
     writeEvent(res, { status: "STARTED", sessionId: payload.sessionId });
 
-    const result = await sendWaOnce(payload, {
-      emit: (event) => writeEvent(res, event),
-    });
+    let result;
+
+    try {
+      result = await runSend(payload, res);
+    } catch (error) {
+      const canRetryPairing = Boolean(payload.phoneNumber) && isLoggedOutSessionError(error);
+
+      if (!canRetryPairing) throw error;
+
+      await clearStoredSession(payload.sessionId);
+      writeEvent(res, {
+        status: "SESSION_RESET",
+        sessionId: payload.sessionId,
+      });
+
+      result = await runSend(payload, res);
+    }
 
     writeEvent(res, result);
     res.end();
