@@ -1,17 +1,8 @@
-import { Pool } from "pg";
-import { sendWaOnce } from "../lib/wa-send-once.js";
+import { sendWaOnce, clearStoredSession } from "../lib/wa-send-once.js";
 
 export const config = {
   maxDuration: 300,
 };
-
-const DATABASE_URL = process.env.NEONDB_URI || process.env.DATABASE_URL;
-const resetPool = DATABASE_URL
-  ? new Pool({
-      connectionString: DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-    })
-  : null;
 
 function writeEvent(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -91,14 +82,6 @@ function isLoggedOutSessionError(error) {
     || message.includes("unpaired")
     || message.includes("pairing ulang")
     || message.includes("perlu pairing");
-}
-
-async function clearStoredSession(sessionId) {
-  if (!resetPool) {
-    throw new Error("NEONDB_URI atau DATABASE_URL wajib diisi untuk reset session WhatsApp.");
-  }
-
-  await resetPool.query("DELETE FROM wa_session WHERE id = $1", [sessionId]);
 }
 
 function runSend(payload, res) {
